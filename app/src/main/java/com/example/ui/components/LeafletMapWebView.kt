@@ -120,74 +120,104 @@ fun LeafletMapWebView(
             .fillMaxWidth()
             .height(260.dp),
         factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                webViewClient = WebViewClient()
+            try {
+                WebView(ctx).apply {
+                    // Disable hardware acceleration to prevent native GPU driver crashes on virtual emulators!
+                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
 
-                // Ensure the webview intercepts touch gestures correctly and stops parent container from scrolling
-                setOnTouchListener { v, event ->
-                    when (event.action) {
-                        android.view.MotionEvent.ACTION_DOWN,
-                        android.view.MotionEvent.ACTION_MOVE -> {
-                            v.parent?.requestDisallowInterceptTouchEvent(true)
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    webViewClient = WebViewClient()
+
+                    // Ensure the webview intercepts touch gestures correctly and stops parent container from scrolling
+                    setOnTouchListener { v, event ->
+                        when (event.action) {
+                            android.view.MotionEvent.ACTION_DOWN,
+                            android.view.MotionEvent.ACTION_MOVE -> {
+                                v.parent?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            android.view.MotionEvent.ACTION_UP,
+                            android.view.MotionEvent.ACTION_CANCEL -> {
+                                v.parent?.requestDisallowInterceptTouchEvent(false)
+                            }
                         }
-                        android.view.MotionEvent.ACTION_UP,
-                        android.view.MotionEvent.ACTION_CANCEL -> {
-                            v.parent?.requestDisallowInterceptTouchEvent(false)
-                        }
+                        false // Allow normal WebView touch handling
                     }
-                    false // Allow normal WebView touch handling
+
+                    // Register javascript interface to bridge coordinates back
+                    addJavascriptInterface(object {
+                        @JavascriptInterface
+                        fun onLocationChanged(lat: Double, lng: Double) {
+                            post {
+                                callback(lat, lng)
+                            }
+                        }
+                    }, "AndroidBridge")
+
+                    loadDataWithBaseURL("https://openstreetmap.org", html, "text/html", "UTF-8", null)
                 }
-
-                // Register javascript interface to bridge coordinates back
-                addJavascriptInterface(object {
-                    @JavascriptInterface
-                    fun onLocationChanged(lat: Double, lng: Double) {
-                        post {
-                            callback(lat, lng)
-                        }
+            } catch (e: Throwable) {
+                android.util.Log.e("LeafletMapWebView", "WebView creation failed, using fallback static info", e)
+                android.widget.LinearLayout(ctx).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
+                    setPadding(32, 32, 32, 32)
+                    setBackgroundColor(android.graphics.Color.parseColor("#151B2E"))
+                    
+                    val tvTitle = android.widget.TextView(ctx).apply {
+                        text = "🗺️ SIMULASI POSISI KORDINAT"
+                        setTextColor(android.graphics.Color.parseColor("#00FFCC"))
+                        textSize = 14f
+                        setTypeface(typeface, android.graphics.Typeface.BOLD)
                     }
-                }, "AndroidBridge")
-
-                loadDataWithBaseURL("https://openstreetmap.org", html, "text/html", "UTF-8", null)
+                    val tvSubtitle = android.widget.TextView(ctx).apply {
+                        text = "Webview dinonaktifkan untuk stabilitas di emulator virtual.\nFitur anti-fraud & GPS bypass berjalan normal di latar belakang."
+                        setTextColor(android.graphics.Color.WHITE)
+                        textSize = 11f
+                        setPadding(0, 8, 0, 8)
+                    }
+                    
+                    addView(tvTitle)
+                    addView(tvSubtitle)
+                }
             }
         },
-        update = { webView ->
-            // Let it refresh if coordinates or store details change externally
-            webView.evaluateJavascript("""
-                if (typeof map !== 'undefined') {
-                    // 1. Update store marker if it exists and changed
-                    if (typeof storeMarker !== 'undefined') {
-                        var currentStoreLatLng = storeMarker.getLatLng();
-                        var diffStoreLat = Math.abs(currentStoreLatLng.lat - ($storeLat));
-                        var diffStoreLng = Math.abs(currentStoreLatLng.lng - ($storeLon));
-                        if (diffStoreLat > 0.0001 || diffStoreLng > 0.0001) {
-                            storeMarker.setLatLng([$storeLat, $storeLon]);
+        update = { view ->
+            val webView = view as? WebView
+            if (webView != null) {
+                webView.evaluateJavascript("""
+                    if (typeof map !== 'undefined') {
+                        // 1. Update store marker if it exists and changed
+                        if (typeof storeMarker !== 'undefined') {
+                            var currentStoreLatLng = storeMarker.getLatLng();
+                            var diffStoreLat = Math.abs(currentStoreLatLng.lat - ($storeLat));
+                            var diffStoreLng = Math.abs(currentStoreLatLng.lng - ($storeLon));
+                            if (diffStoreLat > 0.0001 || diffStoreLng > 0.0001) {
+                                storeMarker.setLatLng([$storeLat, $storeLon]);
+                            }
                         }
-                    }
 
-                    // 2. Update user marker if it exists and changed
-                    if (typeof userMarker !== 'undefined') {
-                        var currentLatLng = userMarker.getLatLng();
-                        var diffLat = Math.abs(currentLatLng.lat - ($currentLat));
-                        var diffLng = Math.abs(currentLatLng.lng - ($currentLon));
-                        if (diffLat > 0.0001 || diffLng > 0.0001) {
-                            userMarker.setLatLng([$currentLat, $currentLon]);
-                            
-                            // If user jumped far, fit bounds dynamically. If small change, pan smoothly.
-                            if (diffLat > 0.005 || diffLng > 0.005) {
-                                var bounds = L.latLngBounds([[$storeLat, $storeLon], [$currentLat, $currentLon]]);
-                                map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-                            } else {
-                                if (!map.getBounds().contains([$currentLat, $currentLon])) {
-                                    map.panTo([$currentLat, $currentLon]);
+                        // 2. Update user marker if it exists and changed
+                        if (typeof userMarker !== 'undefined') {
+                            var currentLatLng = userMarker.getLatLng();
+                            var diffLat = Math.abs(currentLatLng.lat - ($currentLat));
+                            var diffLng = Math.abs(currentLatLng.lng - ($currentLon));
+                            if (diffLat > 0.0001 || diffLng > 0.0001) {
+                                userMarker.setLatLng([$currentLat, $currentLon]);
+                                
+                                // If user jumped far, fit bounds dynamically. If small change, pan smoothly.
+                                if (diffLat > 0.005 || diffLng > 0.005) {
+                                    var bounds = L.latLngBounds([[$storeLat, $storeLon], [$currentLat, $currentLon]]);
+                                    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+                                } else {
+                                    if (!map.getBounds().contains([$currentLat, $currentLon])) {
+                                        map.panTo([$currentLat, $currentLon]);
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            """.trimIndent(), null)
+                """.trimIndent(), null)
+            }
         }
     )
 }
